@@ -1,4 +1,4 @@
-# walmart-k8s-project
+# walmart-k8s
 
 Destination Repository for CI/CD Workflow
 
