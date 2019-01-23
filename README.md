@@ -13,7 +13,7 @@ This respository contains:
 
 ## Reproducing the Workflow
 
-# Prerequisites (manual steps):
+### Prerequisites (manual steps):
     - Source and Destination Git Repos must be created and defined.
         - E.g. https://github.com/yradsmikham/walmart-hld (source) and https://github.com/yradsmikham/walmart-k8s/ (destination)
         - A Personal Access Token (PAT) will need to be generated on the destination repo
@@ -48,7 +48,7 @@ steps:
 	- Deploy key created for Flux must be configured in destination repo. Flux should be configured and installed on AKS cluster.
 
 
-# Automation:
+### Automation:
 1. The source repo should contain high level definition files, the azure-pipelines.yml, and the shell script that is operated by Azure Pipelines. Changes made to the component.json file will be made as a commit to the Git Repo.
 2. Every commit that comes through will trigger Azure Pipelines Build, which executes the shell script.
 3. The shell script will download, install, run Fabrikate, and push any updates made to the AKS manifest files to the destination repo
