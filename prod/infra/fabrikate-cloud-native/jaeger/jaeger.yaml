@@ -399,7 +399,13 @@ spec:
           protocol: UDP
         - containerPort: 5778
           protocol: TCP
-        resources: {}
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 256m
+            memory: 128Mi
       dnsPolicy: ClusterFirst
       nodeSelector: {}
 
@@ -520,7 +526,7 @@ metadata:
   name: jaeger-collector
   namespace: jaeger
 spec:
-  replicas: 5
+  replicas: 3
   strategy:
     type: Recreate
   template:
@@ -592,7 +598,13 @@ spec:
           httpGet:
             port: healthcheck
           initialDelaySeconds: 10
-        resources: {}
+        resources:
+          limits:
+            cpu: 1
+            memory: 1Gi
+          requests:
+            cpu: 500m
+            memory: 512Mi
       dnsPolicy: ClusterFirst
       nodeSelector: {}
       restartPolicy: Always
@@ -669,7 +681,13 @@ spec:
           httpGet:
             path: /
             port: 16687
-        resources: {}
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 256m
+            memory: 128Mi
       dnsPolicy: ClusterFirst
       nodeSelector: {}
       restartPolicy: Always
