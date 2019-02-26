@@ -9,7 +9,7 @@ kind: ConfigMap
 metadata:
   labels:
     app: kibana
-    chart: kibana-1.4.1
+    chart: kibana-1.5.2
     heritage: Tiller
     release: kibana
   name: kibana
@@ -21,7 +21,7 @@ kind: Service
 metadata:
   labels:
     app: kibana
-    chart: kibana-1.4.1
+    chart: kibana-1.5.2
     heritage: Tiller
     release: kibana
   name: kibana
@@ -42,7 +42,7 @@ kind: Deployment
 metadata:
   labels:
     app: kibana
-    chart: kibana-1.4.1
+    chart: kibana-1.5.2
     heritage: Tiller
     release: kibana
   name: kibana
@@ -53,7 +53,7 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/config: d415aa5443cfee0284b555852e58f1047d15816ad5f19f328b6bcca7ca98f03a
+        checksum/config: 78565c22e262ce747c2a693ca7c2f23a2b0ead2a530a83647e1729d88db3e9e5
       labels:
         app: kibana
         release: kibana
