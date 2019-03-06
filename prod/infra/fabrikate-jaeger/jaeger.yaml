@@ -10,24 +10,13 @@ data:
     node.name: ${HOSTNAME}
 
     network.host: 0.0.0.0
-
-    cloud:
-      kubernetes:
-        service: ${SERVICE}
-        namespace: ${KUBERNETES_NAMESPACE}
     # see https://github.com/kubernetes/kubernetes/issues/3595
     bootstrap.memory_lock: ${BOOTSTRAP_MEMORY_LOCK:false}
 
     discovery:
       zen:
-        hosts_provider: kubernetes
+        ping.unicast.hosts: ${DISCOVERY_SERVICE:}
         minimum_master_nodes: ${MINIMUM_MASTER_NODES:2}
-
-    # see https://www.elastic.co/guide/en/x-pack/current/xpack-settings.html
-    xpack.ml.enabled: ${XPACK_ML_ENABLED:false}
-    xpack.monitoring.enabled: ${XPACK_MONITORING_ENABLED:false}
-    xpack.security.enabled: ${XPACK_SECURITY_ENABLED:false}
-    xpack.watcher.enabled: ${XPACK_WATCHER_ENABLED:false}
 
     # see https://github.com/elastic/elasticsearch-definitive-guide/pull/679
     processors: ${PROCESSORS:}
@@ -48,70 +37,47 @@ data:
     rootLogger.appenderRef.console.ref = console
     logger.searchguard.name = com.floragunn
     logger.searchguard.level = info
+  post-start-hook.sh: |-
+    #!/bin/bash
+    exec &> >(tee -a "/var/log/elasticsearch-hooks.log")
+    NODE_NAME=${HOSTNAME}
+    CLUSTER_SETTINGS=$(curl -s -XGET "http://jaeger-elasticsearch-client:9200/_cluster/settings")
+    if echo "${CLUSTER_SETTINGS}" | grep -E "${NODE_NAME}"; then
+      echo "Activate node ${NODE_NAME}"
+      curl -s -XPUT -H 'Content-Type: application/json' "http://jaeger-elasticsearch-client:9200/_cluster/settings" -d "{
+        \"transient\" :{
+            \"cluster.routing.allocation.exclude._name\" : null
+        }
+      }"
+    fi
+    echo "Node ${NODE_NAME} is ready to be used"
   pre-stop-hook.sh: |-
     #!/bin/bash
-    set -e
-
-    SERVICE_ACCOUNT_PATH=/var/run/secrets/kubernetes.io/serviceaccount
-    KUBE_TOKEN=$(<${SERVICE_ACCOUNT_PATH}/token)
-    KUBE_NAMESPACE=$(<${SERVICE_ACCOUNT_PATH}/namespace)
-
-    STATEFULSET_NAME=$(echo "${HOSTNAME}" | sed 's/-[0-9]*$//g')
-    INSTANCE_ID=$(echo "${HOSTNAME}" | grep -o '[0-9]*$')
-
-    echo "Prepare stopping of Pet ${KUBE_NAMESPACE}/${HOSTNAME} of StatefulSet ${KUBE_NAMESPACE}/${STATEFULSET_NAME} instance_id ${INSTANCE_ID}"
-
-    INSTANCES_DESIRED=$(curl -s \
-      --cacert ${SERVICE_ACCOUNT_PATH}/ca.crt \
-      -H "Authorization: Bearer $KUBE_TOKEN" \
-      "https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_PORT_443_TCP_PORT}/apis/apps/v1beta1/namespaces/${KUBE_NAMESPACE}/statefulsets/${STATEFULSET_NAME}/status" | jq -r '.spec.replicas')
-
-    echo "Desired instance count is ${INSTANCES_DESIRED}"
-
-    if [ "${INSTANCE_ID}" -lt "${INSTANCES_DESIRED}" ]; then
-      echo "No data migration needed"
-      exit 0
-    fi
-
-    echo "Prepare to migrate data of the node"
-
-    NODE_STATS=$(curl -s -XGET 'http://localhost:9200/_nodes/stats')
-    NODE_IP=$(echo "${NODE_STATS}" | jq -r ".nodes[] | select(.name==\"${HOSTNAME}\") | .host")
-
-    echo "Move all data from node ${NODE_IP}"
-
-    curl -s -XPUT localhost:9200/_cluster/settings -d "{
+    exec &> >(tee -a "/var/log/elasticsearch-hooks.log")
+    NODE_NAME=${HOSTNAME}
+    echo "Prepare to migrate data of the node ${NODE_NAME}"
+    echo "Move all data from node ${NODE_NAME}"
+    curl -s -XPUT -H 'Content-Type: application/json' 'jaeger-elasticsearch-client:9200/_cluster/settings' -d "{
       \"transient\" :{
-          \"cluster.routing.allocation.exclude._ip\" : \"${NODE_IP}\"
+          \"cluster.routing.allocation.exclude._name\" : \"${NODE_NAME}\"
       }
     }"
-    echo
+    echo ""
 
-    echo "Wait for node to become empty"
-    DOC_COUNT=$(echo "${NODE_STATS}" | jq ".nodes[] | select(.name==\"${HOSTNAME}\") | .indices.docs.count")
-    while [ "${DOC_COUNT}" -gt 0 ]; do
-      NODE_STATS=$(curl -s -XGET 'http://localhost:9200/_nodes/stats')
-      DOC_COUNT=$(echo "${NODE_STATS}" | jq -r ".nodes[] | select(.name==\"${HOSTNAME}\") | .indices.docs.count")
-      echo "Node contains ${DOC_COUNT} documents"
+    while true ; do
+      echo -e "Wait for node ${NODE_NAME} to become empty"
+      SHARDS_ALLOCATION=$(curl -s -XGET 'http://jaeger-elasticsearch-client:9200/_cat/shards')
+      if ! echo "${SHARDS_ALLOCATION}" | grep -E "${NODE_NAME}"; then
+        break
+      fi
       sleep 1
     done
-
-    echo "Wait for node shards to become empty"
-    SHARD_STATS=$(curl -s -XGET 'http://localhost:9200/_cat/shards?format=json')
-    SHARD_COUNT=$(echo "${SHARD_STATS}" | jq "[.[] | select(.node==\"${HOSTNAME}\")] | length")
-    while [ "${SHARD_COUNT}" -gt 0 ]; do
-      SHARD_STATS=$(curl -s -XGET 'http://localhost:9200/_cat/shards?format=json')
-      SHARD_COUNT=$(echo "${SHARD_STATS}" | jq "[.[] | select(.node==\"${HOSTNAME}\")] | length")
-      echo "Node contains ${SHARD_COUNT} shards"
-      sleep 1
-    done
-
-    echo "Node clear to shutdown"
+    echo "Node ${NODE_NAME} is ready to shutdown"
 kind: ConfigMap
 metadata:
   labels:
     app: jaeger-elasticsearch
-    chart: elasticsearch-0.5.0
+    chart: elasticsearch-1.21.2
     heritage: Tiller
     release: jaeger
   name: jaeger-elasticsearch
@@ -143,11 +109,10 @@ data:
 kind: ConfigMap
 metadata:
   labels:
-    app: jaeger
-    chart: jaeger-0.8.3
-    heritage: Tiller
-    jaeger-infra: common-configmap
-    release: jaeger
+    app.kubernetes.io/instance: jaeger
+    app.kubernetes.io/managed-by: Tiller
+    app.kubernetes.io/name: jaeger
+    helm.sh/chart: jaeger-0.9.0
   name: jaeger
   namespace: jaeger
 
@@ -157,59 +122,37 @@ kind: ServiceAccount
 metadata:
   labels:
     app: elasticsearch
-    chart: elasticsearch-0.5.0
+    chart: elasticsearch-1.21.2
+    component: client
     heritage: Tiller
     release: jaeger
-  name: jaeger-elasticsearch
+  name: jaeger-elasticsearch-client
   namespace: jaeger
 
 ---
-apiVersion: rbac.authorization.k8s.io/v1beta1
-kind: ClusterRole
+apiVersion: v1
+kind: ServiceAccount
 metadata:
   labels:
     app: elasticsearch
-    chart: elasticsearch-0.5.0
+    chart: elasticsearch-1.21.2
+    component: data
     heritage: Tiller
     release: jaeger
-  name: jaeger-elasticsearch
+  name: jaeger-elasticsearch-data
   namespace: jaeger
-rules:
-- nonResourceURLs:
-  - /
-  verbs:
-  - get
-- apiGroups:
-  - ""
-  resources:
-  - endpoints
-  verbs:
-  - get
-- apiGroups:
-  - apps
-  resources:
-  - statefulsets/status
-  verbs:
-  - get
 
 ---
-apiVersion: rbac.authorization.k8s.io/v1beta1
-kind: ClusterRoleBinding
+apiVersion: v1
+kind: ServiceAccount
 metadata:
   labels:
     app: elasticsearch
-    chart: elasticsearch-0.5.0
+    chart: elasticsearch-1.21.2
+    component: master
     heritage: Tiller
     release: jaeger
-  name: jaeger-elasticsearch
-  namespace: jaeger
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: jaeger-elasticsearch
-subjects:
-- kind: ServiceAccount
-  name: jaeger-elasticsearch
+  name: jaeger-elasticsearch-master
   namespace: jaeger
 
 ---
@@ -218,7 +161,7 @@ kind: Service
 metadata:
   labels:
     app: elasticsearch
-    chart: elasticsearch-0.5.0
+    chart: elasticsearch-1.21.2
     component: client
     heritage: Tiller
     release: jaeger
@@ -229,9 +172,6 @@ spec:
   - name: http
     port: 9200
     targetPort: http
-  - name: transport
-    port: 9300
-    targetPort: transport
   selector:
     app: elasticsearch
     component: client
@@ -244,11 +184,11 @@ kind: Service
 metadata:
   labels:
     app: elasticsearch
-    chart: elasticsearch-0.5.0
+    chart: elasticsearch-1.21.2
     component: master
     heritage: Tiller
     release: jaeger
-  name: jaeger-elasticsearch-master
+  name: jaeger-elasticsearch-discovery
   namespace: jaeger
 spec:
   clusterIP: None
@@ -265,12 +205,11 @@ apiVersion: v1
 kind: Service
 metadata:
   labels:
-    app: jaeger
-    chart: jaeger-0.8.3
-    component: agent
-    heritage: Tiller
-    jaeger-infra: agent-service
-    release: jaeger
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/instance: jaeger
+    app.kubernetes.io/managed-by: Tiller
+    app.kubernetes.io/name: jaeger
+    helm.sh/chart: jaeger-0.9.0
   name: jaeger-agent
   namespace: jaeger
 spec:
@@ -292,10 +231,9 @@ spec:
     protocol: TCP
     targetPort: 5778
   selector:
-    app: jaeger
-    component: agent
-    jaeger-infra: agent-instance
-    release: jaeger
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/instance: jaeger
+    app.kubernetes.io/name: jaeger
   type: ClusterIP
 
 ---
@@ -303,12 +241,11 @@ apiVersion: v1
 kind: Service
 metadata:
   labels:
-    app: jaeger
-    chart: jaeger-0.8.3
-    component: collector
-    heritage: Tiller
-    jaeger-infra: collector-service
-    release: jaeger
+    app.kubernetes.io/component: collector
+    app.kubernetes.io/instance: jaeger
+    app.kubernetes.io/managed-by: Tiller
+    app.kubernetes.io/name: jaeger
+    helm.sh/chart: jaeger-0.9.0
   name: jaeger-collector
   namespace: jaeger
 spec:
@@ -326,10 +263,9 @@ spec:
     protocol: TCP
     targetPort: zipkin
   selector:
-    app: jaeger
-    component: collector
-    jaeger-infra: collector-pod
-    release: jaeger
+    app.kubernetes.io/component: collector
+    app.kubernetes.io/instance: jaeger
+    app.kubernetes.io/name: jaeger
   type: ClusterIP
 
 ---
@@ -337,12 +273,11 @@ apiVersion: v1
 kind: Service
 metadata:
   labels:
-    app: jaeger
-    chart: jaeger-0.8.3
-    component: query
-    heritage: Tiller
-    jaeger-infra: query-service
-    release: jaeger
+    app.kubernetes.io/component: query
+    app.kubernetes.io/instance: jaeger
+    app.kubernetes.io/managed-by: Tiller
+    app.kubernetes.io/name: jaeger
+    helm.sh/chart: jaeger-0.9.0
   name: jaeger-query
   namespace: jaeger
 spec:
@@ -352,33 +287,35 @@ spec:
     protocol: TCP
     targetPort: 16686
   selector:
-    app: jaeger
-    component: query
-    jaeger-infra: query-pod
-    release: jaeger
+    app.kubernetes.io/component: query
+    app.kubernetes.io/instance: jaeger
+    app.kubernetes.io/name: jaeger
   type: ClusterIP
 
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   labels:
-    app: jaeger
-    chart: jaeger-0.8.3
-    component: agent
-    heritage: Tiller
-    jaeger-infra: agent-daemonset
-    release: jaeger
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/instance: jaeger
+    app.kubernetes.io/managed-by: Tiller
+    app.kubernetes.io/name: jaeger
+    helm.sh/chart: jaeger-0.9.0
   name: jaeger-agent
   namespace: jaeger
 spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: agent
+      app.kubernetes.io/instance: jaeger
+      app.kubernetes.io/name: jaeger
   template:
     metadata:
       labels:
-        app: jaeger
-        component: agent
-        jaeger-infra: agent-instance
-        release: jaeger
+        app.kubernetes.io/component: agent
+        app.kubernetes.io/instance: jaeger
+        app.kubernetes.io/name: jaeger
     spec:
       containers:
       - env:
@@ -387,7 +324,7 @@ spec:
             configMapKeyRef:
               key: collector.host-port
               name: jaeger
-        image: jaegertracing/jaeger-agent:1.9.0
+        image: jaegertracing/jaeger-agent:1.10.0
         imagePullPolicy: IfNotPresent
         name: jaeger-agent
         ports:
@@ -409,7 +346,7 @@ kind: Deployment
 metadata:
   labels:
     app: elasticsearch
-    chart: elasticsearch-0.5.0
+    chart: elasticsearch-1.21.2
     component: client
     heritage: Tiller
     release: jaeger
@@ -437,33 +374,25 @@ spec:
             weight: 1
       containers:
       - env:
-        - name: SERVICE
-          value: jaeger-elasticsearch-master
-        - name: KUBERNETES_MASTER
-          value: kubernetes.default.svc.cluster.local
-        - name: KUBERNETES_NAMESPACE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
         - name: NODE_DATA
-          value: "false"
-        - name: NODE_INGEST
           value: "false"
         - name: NODE_MASTER
           value: "false"
+        - name: DISCOVERY_SERVICE
+          value: jaeger-elasticsearch-discovery
         - name: PROCESSORS
           valueFrom:
             resourceFieldRef:
               resource: limits.cpu
         - name: ES_JAVA_OPTS
-          value: -Djava.net.preferIPv4Stack=true -Xms512m -Xmx512m
+          value: '-Djava.net.preferIPv4Stack=true -Xms512m -Xmx512m  '
         - name: MINIMUM_MASTER_NODES
           value: "2"
-        image: centerforopenscience/elasticsearch:5.4
+        image: docker.elastic.co/elasticsearch/elasticsearch-oss:6.6
         imagePullPolicy: IfNotPresent
         livenessProbe:
           httpGet:
-            path: /_cluster/health?wait_for_status=yellow
+            path: /_cluster/health?local=true
             port: 9200
           initialDelaySeconds: 90
         name: elasticsearch
@@ -474,7 +403,7 @@ spec:
           name: transport
         readinessProbe:
           httpGet:
-            path: /_cluster/health?wait_for_status=yellow
+            path: /_cluster/health
             port: 9200
           initialDelaySeconds: 5
         resources:
@@ -487,49 +416,52 @@ spec:
         - mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
           name: config
           subPath: elasticsearch.yml
-        - mountPath: /usr/share/elasticsearch/config/log4j2.properties
-          name: config
-          subPath: log4j2.properties
       initContainers:
       - command:
         - sysctl
         - -w
         - vm.max_map_count=262144
-        image: busybox
+        image: busybox:latest
         imagePullPolicy: Always
         name: sysctl
+        resources: {}
         securityContext:
           privileged: true
-      serviceAccountName: jaeger-elasticsearch
+      securityContext:
+        fsGroup: 1000
+      serviceAccountName: jaeger-elasticsearch-client
       volumes:
       - configMap:
           name: jaeger-elasticsearch
         name: config
 
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    app: jaeger
-    chart: jaeger-0.8.3
-    component: collector
-    heritage: Tiller
-    jaeger-infra: collector-deployment
-    release: jaeger
+    app.kubernetes.io/component: collector
+    app.kubernetes.io/instance: jaeger
+    app.kubernetes.io/managed-by: Tiller
+    app.kubernetes.io/name: jaeger
+    helm.sh/chart: jaeger-0.9.0
   name: jaeger-collector
   namespace: jaeger
 spec:
   replicas: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: collector
+      app.kubernetes.io/instance: jaeger
+      app.kubernetes.io/name: jaeger
   strategy:
     type: Recreate
   template:
     metadata:
       labels:
-        app: jaeger
-        component: collector
-        jaeger-infra: collector-pod
-        release: jaeger
+        app.kubernetes.io/component: collector
+        app.kubernetes.io/instance: jaeger
+        app.kubernetes.io/name: jaeger
     spec:
       containers:
       - env:
@@ -568,7 +500,7 @@ spec:
             configMapKeyRef:
               key: collector.zipkin.http-port
               name: jaeger
-        image: jaegertracing/jaeger-collector:1.9.0
+        image: jaegertracing/jaeger-collector:1.10.0
         imagePullPolicy: IfNotPresent
         livenessProbe:
           httpGet:
@@ -598,29 +530,32 @@ spec:
       restartPolicy: Always
 
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    app: jaeger
-    chart: jaeger-0.8.3
-    component: query
-    heritage: Tiller
-    jaeger-infra: query-deployment
-    release: jaeger
+    app.kubernetes.io/component: query
+    app.kubernetes.io/instance: jaeger
+    app.kubernetes.io/managed-by: Tiller
+    app.kubernetes.io/name: jaeger
+    helm.sh/chart: jaeger-0.9.0
   name: jaeger-query
   namespace: jaeger
 spec:
   replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: query
+      app.kubernetes.io/instance: jaeger
+      app.kubernetes.io/name: jaeger
   strategy:
     type: Recreate
   template:
     metadata:
       labels:
-        app: jaeger
-        component: query
-        jaeger-infra: query-pod
-        release: jaeger
+        app.kubernetes.io/component: query
+        app.kubernetes.io/instance: jaeger
+        app.kubernetes.io/name: jaeger
     spec:
       containers:
       - env:
@@ -659,7 +594,7 @@ spec:
             configMapKeyRef:
               key: query.base-path
               name: jaeger
-        image: jaegertracing/jaeger-query:1.9.0
+        image: jaegertracing/jaeger-query:1.10.0
         imagePullPolicy: IfNotPresent
         name: jaeger-query
         ports:
@@ -680,7 +615,7 @@ kind: StatefulSet
 metadata:
   labels:
     app: elasticsearch
-    chart: elasticsearch-0.5.0
+    chart: elasticsearch-1.21.2
     component: data
     heritage: Tiller
     release: jaeger
@@ -695,6 +630,7 @@ spec:
         app: elasticsearch
         component: data
         release: jaeger
+        role: data
     spec:
       affinity:
         podAntiAffinity:
@@ -709,14 +645,8 @@ spec:
             weight: 1
       containers:
       - env:
-        - name: SERVICE
-          value: jaeger-elasticsearch-master
-        - name: KUBERNETES_MASTER
-          value: kubernetes.default.svc.cluster.local
-        - name: KUBERNETES_NAMESPACE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
+        - name: DISCOVERY_SERVICE
+          value: jaeger-elasticsearch-discovery
         - name: NODE_MASTER
           value: "false"
         - name: PROCESSORS
@@ -724,12 +654,17 @@ spec:
             resourceFieldRef:
               resource: limits.cpu
         - name: ES_JAVA_OPTS
-          value: -Djava.net.preferIPv4Stack=true -Xms1536m -Xmx1536m
+          value: '-Djava.net.preferIPv4Stack=true -Xms1536m -Xmx1536m  '
         - name: MINIMUM_MASTER_NODES
           value: "2"
-        image: centerforopenscience/elasticsearch:5.4
+        image: docker.elastic.co/elasticsearch/elasticsearch-oss:6.6
         imagePullPolicy: IfNotPresent
         lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/bash
+              - /post-start-hook.sh
           preStop:
             exec:
               command:
@@ -756,36 +691,44 @@ spec:
         - mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
           name: config
           subPath: elasticsearch.yml
-        - mountPath: /usr/share/elasticsearch/config/log4j2.properties
-          name: config
-          subPath: log4j2.properties
         - mountPath: /pre-stop-hook.sh
           name: config
           subPath: pre-stop-hook.sh
+        - mountPath: /post-start-hook.sh
+          name: config
+          subPath: post-start-hook.sh
       initContainers:
       - command:
         - sysctl
         - -w
         - vm.max_map_count=262144
-        image: busybox
+        image: busybox:latest
         imagePullPolicy: Always
         name: sysctl
+        resources: {}
         securityContext:
           privileged: true
       - command:
         - /bin/bash
         - -c
-        - chown -R elasticsearch:elasticsearch /usr/share/elasticsearch/data && chown
-          -R elasticsearch:elasticsearch /usr/share/elasticsearch/logs
-        image: centerforopenscience/elasticsearch:5.4
+        - |
+          set -e; set -x; chown elasticsearch:elasticsearch /usr/share/elasticsearch/data; for datadir in $(find /usr/share/elasticsearch/data -mindepth 1 -maxdepth 1 -not -name ".snapshot"); do
+            chown -R elasticsearch:elasticsearch $datadir;
+          done; chown elasticsearch:elasticsearch /usr/share/elasticsearch/logs; for logfile in $(find /usr/share/elasticsearch/logs -mindepth 1 -maxdepth 1 -not -name ".snapshot"); do
+            chown -R elasticsearch:elasticsearch $logfile;
+          done
+        image: docker.elastic.co/elasticsearch/elasticsearch-oss:6.6
         imagePullPolicy: IfNotPresent
         name: chown
+        resources: {}
         securityContext:
           runAsUser: 0
         volumeMounts:
         - mountPath: /usr/share/elasticsearch/data
           name: data
-      serviceAccountName: jaeger-elasticsearch
+      securityContext:
+        fsGroup: 1000
+      serviceAccountName: jaeger-elasticsearch-data
       terminationGracePeriodSeconds: 3600
       volumes:
       - configMap:
@@ -793,6 +736,8 @@ spec:
         name: config
       - emptyDir: {}
         name: data
+  updateStrategy:
+    type: OnDelete
 
 ---
 apiVersion: apps/v1beta1
@@ -800,7 +745,7 @@ kind: StatefulSet
 metadata:
   labels:
     app: elasticsearch
-    chart: elasticsearch-0.5.0
+    chart: elasticsearch-1.21.2
     component: master
     heritage: Tiller
     release: jaeger
@@ -815,6 +760,7 @@ spec:
         app: elasticsearch
         component: master
         release: jaeger
+        role: master
     spec:
       affinity:
         podAntiAffinity:
@@ -829,27 +775,19 @@ spec:
             weight: 1
       containers:
       - env:
-        - name: SERVICE
-          value: jaeger-elasticsearch-master
-        - name: KUBERNETES_MASTER
-          value: kubernetes.default.svc.cluster.local
-        - name: KUBERNETES_NAMESPACE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
         - name: NODE_DATA
           value: "false"
-        - name: NODE_INGEST
-          value: "false"
+        - name: DISCOVERY_SERVICE
+          value: jaeger-elasticsearch-discovery
         - name: PROCESSORS
           valueFrom:
             resourceFieldRef:
               resource: limits.cpu
         - name: ES_JAVA_OPTS
-          value: -Djava.net.preferIPv4Stack=true -Xms512m -Xmx512m
+          value: '-Djava.net.preferIPv4Stack=true -Xms512m -Xmx512m  '
         - name: MINIMUM_MASTER_NODES
           value: "2"
-        image: centerforopenscience/elasticsearch:5.4
+        image: docker.elastic.co/elasticsearch/elasticsearch-oss:6.6
         imagePullPolicy: IfNotPresent
         name: elasticsearch
         ports:
@@ -872,37 +810,44 @@ spec:
         - mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
           name: config
           subPath: elasticsearch.yml
-        - mountPath: /usr/share/elasticsearch/config/log4j2.properties
-          name: config
-          subPath: log4j2.properties
       initContainers:
       - command:
         - sysctl
         - -w
         - vm.max_map_count=262144
-        image: busybox
+        image: busybox:latest
         imagePullPolicy: Always
         name: sysctl
+        resources: {}
         securityContext:
           privileged: true
       - command:
         - /bin/bash
         - -c
-        - chown -R elasticsearch:elasticsearch /usr/share/elasticsearch/data && chown
-          -R elasticsearch:elasticsearch /usr/share/elasticsearch/logs
-        image: centerforopenscience/elasticsearch:5.4
+        - |
+          set -e; set -x; chown elasticsearch:elasticsearch /usr/share/elasticsearch/data; for datadir in $(find /usr/share/elasticsearch/data -mindepth 1 -maxdepth 1 -not -name ".snapshot"); do
+            chown -R elasticsearch:elasticsearch $datadir;
+          done; chown elasticsearch:elasticsearch /usr/share/elasticsearch/logs; for logfile in $(find /usr/share/elasticsearch/logs -mindepth 1 -maxdepth 1 -not -name ".snapshot"); do
+            chown -R elasticsearch:elasticsearch $logfile;
+          done
+        image: docker.elastic.co/elasticsearch/elasticsearch-oss:6.6
         imagePullPolicy: IfNotPresent
         name: chown
+        resources: {}
         securityContext:
           runAsUser: 0
         volumeMounts:
         - mountPath: /usr/share/elasticsearch/data
           name: data
-      serviceAccountName: jaeger-elasticsearch
+      securityContext:
+        fsGroup: 1000
+      serviceAccountName: jaeger-elasticsearch-master
       volumes:
       - configMap:
           name: jaeger-elasticsearch
         name: config
+  updateStrategy:
+    type: OnDelete
   volumeClaimTemplates:
   - metadata:
       name: data
@@ -912,4 +857,63 @@ spec:
       resources:
         requests:
           storage: 4Gi
+
+---
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  labels:
+    app.kubernetes.io/component: spark
+    app.kubernetes.io/instance: jaeger
+    app.kubernetes.io/managed-by: Tiller
+    app.kubernetes.io/name: jaeger
+    helm.sh/chart: jaeger-0.9.0
+  name: jaeger-spark
+  namespace: jaeger
+spec:
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/component: spark
+            app.kubernetes.io/instance: jaeger
+            app.kubernetes.io/name: jaeger
+        spec:
+          containers:
+          - env:
+            - name: STORAGE
+              valueFrom:
+                configMapKeyRef:
+                  key: span-storage.type
+                  name: jaeger
+            - name: ES_NODES
+              valueFrom:
+                configMapKeyRef:
+                  key: es.server-urls
+                  name: jaeger
+            - name: ES_NODES_WAN_ONLY
+              valueFrom:
+                configMapKeyRef:
+                  key: es.nodes-wan-only
+                  name: jaeger
+            - name: ES_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  key: es.password
+                  name: jaeger
+            - name: ES_USERNAME
+              valueFrom:
+                configMapKeyRef:
+                  key: es.username
+                  name: jaeger
+            image: jaegertracing/spark-dependencies:latest
+            imagePullPolicy: Always
+            name: jaeger-spark
+            resources: {}
+          nodeSelector: {}
+          restartPolicy: OnFailure
+  schedule: 49 23 * * *
+  successfulJobsHistoryLimit: 5
 
