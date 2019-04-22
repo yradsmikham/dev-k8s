@@ -98,6 +98,32 @@ metadata:
 
 ---
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: elasticsearch
+    chart: elasticsearch-1.21.2
+    component: data
+    heritage: Tiller
+    release: elasticsearch
+  name: elasticsearch-data
+  namespace: elasticsearch
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: elasticsearch
+    chart: elasticsearch-1.21.2
+    component: master
+    heritage: Tiller
+    release: elasticsearch
+  name: elasticsearch-master
+  namespace: elasticsearch
+
+---
+apiVersion: v1
 kind: Service
 metadata:
   labels:
