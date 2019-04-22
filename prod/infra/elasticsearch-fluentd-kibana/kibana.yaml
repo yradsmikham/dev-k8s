@@ -21,7 +21,7 @@ kind: Service
 metadata:
   labels:
     app: kibana
-    chart: kibana-1.6.0ZZZZZZZZZZZZ
+    chart: kibana-1.6.0
     heritage: Tiller
     release: kibana
   name: kibana
