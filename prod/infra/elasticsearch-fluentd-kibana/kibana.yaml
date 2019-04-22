@@ -17,11 +17,11 @@ metadata:
 
 ---
 apiVersion: v1
-kind: ServiceZZZZZZZZZZZZZZ
+kind: Service
 metadata:
   labels:
     app: kibana
-    chart: kibana-1.6.0
+    chart: kibana-1.6.0ZZZZZZZZZZZZ
     heritage: Tiller
     release: kibana
   name: kibana
