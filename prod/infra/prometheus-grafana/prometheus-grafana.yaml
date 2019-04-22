@@ -10,6 +10,6 @@ metadata:
   name: prometheus
 ---
 apiVersion: v1
-kind: Namespace
+kind: foo
 metadata:
   name: prometheus
