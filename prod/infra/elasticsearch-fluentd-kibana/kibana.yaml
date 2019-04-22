@@ -4,7 +4,7 @@ data:
   kibana.yml: |
     elasticsearch.url: http://elasticsearch-client.elasticsearch.svc.cluster.local:9200
     server.host: "0"
-    server.name: kibanaZZZZZZZ
+    server.name: kibana
 kind: ConfigMap
 metadata:
   labels:
@@ -17,7 +17,7 @@ metadata:
 
 ---
 apiVersion: v1
-kind: Service
+kind: ServiceZZZZZZZZZZZZZZ
 metadata:
   labels:
     app: kibana
