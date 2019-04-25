@@ -1,4 +1,4 @@
-# walmart-k8s
+# dev-k8s
 
 AKS Manifest Repository for CI/CD Workflow
 
@@ -15,7 +15,7 @@ This respository contains:
 
 ### Prerequisites (manual steps):
 1. Source and Destination Git Repos must be created and defined.
-(E.g. https://github.com/yradsmikham/walmart-hld/ (source) and https://github.com/yradsmikham/walmart-k8s/ (destination))
+(E.g. https://github.com/yradsmikham/dev-hld/ (source) and https://github.com/yradsmikham/dev-k8s/ (destination))
 2. A Personal Access Token (PAT) will need to be generated on the destination repo
 3. An AKS Cluster should already be up and running (this could be automated by the Infra team, but is a prereq for the purpose of this demo)
 4. Azure Pipeline build that is configured to be triggered by the source Git repo, and will run a shell script. The azure-pipeline.yml file should look something like the following:
