@@ -2,6 +2,7 @@
 apiVersion: v1
 data:
   kibana.yml: |
+    elasticsearch.hosts: http://elasticsearch:9200
     elasticsearch.url: http://elasticsearch-client.elasticsearch.svc.cluster.local:9200
     server.host: "0"
     server.name: kibana
@@ -9,10 +10,43 @@ kind: ConfigMap
 metadata:
   labels:
     app: kibana
-    chart: kibana-1.6.0
+    chart: kibana-2.3.0
     heritage: Tiller
     release: kibana
   name: kibana
+  namespace: kibana
+
+---
+apiVersion: v1
+data:
+  run.sh: |-
+    @test "Test Status" {
+      url="http://kibana:443/api/status"
+
+      # retry for 1 minute
+      run curl -s -o /dev/null -I -w "%{http_code}" --retry 30 --retry-delay 2 $url
+
+      code=$(curl -s -o /dev/null -I -w "%{http_code}" $url)
+      body=$(curl $url)
+      if [ "$code" == "503" ]
+      then
+        skip "Kibana Unavailable (503), can't get status - see pod logs: $body"
+      fi
+
+      result=$(echo $body | jq -cr '.status.statuses[]')
+      [ "$result" != "" ]
+
+      result=$(echo $body | jq -cr '.status.statuses[] | select(.state != "green")')
+      [ "$result" == "" ]
+    }
+kind: ConfigMap
+metadata:
+  labels:
+    app: kibana
+    chart: kibana-2.3.0
+    heritage: Tiller
+    release: kibana
+  name: kibana-test
   namespace: kibana
 
 ---
@@ -21,7 +55,7 @@ kind: Service
 metadata:
   labels:
     app: kibana
-    chart: kibana-1.6.0
+    chart: kibana-2.3.0
     heritage: Tiller
     release: kibana
   name: kibana
@@ -37,12 +71,60 @@ spec:
   type: ClusterIP
 
 ---
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    helm.sh/hook: test-success
+  labels:
+    app: kibana
+    chart: kibana-2.3.0
+    heritage: Tiller
+    release: kibana
+  name: kibana-test
+  namespace: kibana
+spec:
+  containers:
+  - command:
+    - /tools/bats/bats
+    - -t
+    - /tests/run.sh
+    image: dwdraju/alpine-curl-jq
+    name: kibana-test
+    volumeMounts:
+    - mountPath: /tests
+      name: tests
+      readOnly: true
+    - mountPath: /tools
+      name: tools
+  initContainers:
+  - command:
+    - bash
+    - -c
+    - |
+      set -ex
+      # copy bats to tools dir
+      cp -R /usr/local/libexec/ /tools/bats/
+    image: dduportal/bats:0.4.0
+    name: test-framework
+    volumeMounts:
+    - mountPath: /tools
+      name: tools
+  restartPolicy: Never
+  volumes:
+  - configMap:
+      name: kibana-test
+    name: tests
+  - emptyDir: {}
+    name: tools
+
+---
 apiVersion: apps/v1beta1
 kind: Deployment
 metadata:
   labels:
     app: kibana
-    chart: kibana-1.6.0
+    chart: kibana-2.3.0
     heritage: Tiller
     release: kibana
   name: kibana
@@ -53,14 +135,14 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/config: 1ec5d8d67134ae16bf7a96097f34cbf453bb79aec71da90e87e66f8a197b9c89
+        checksum/config: 2afbcc0541a1ae5f28adc0b5c6aab03813a5e2c210f6d6a78d4b074f1278c267
       labels:
         app: kibana
         release: kibana
     spec:
       containers:
       - env: null
-        image: docker.elastic.co/kibana/kibana-oss:6.6.0
+        image: docker.elastic.co/kibana/kibana-oss:6.7.0
         imagePullPolicy: IfNotPresent
         name: kibana
         ports:
@@ -78,3 +160,4 @@ spec:
       - configMap:
           name: kibana
         name: kibana
+
